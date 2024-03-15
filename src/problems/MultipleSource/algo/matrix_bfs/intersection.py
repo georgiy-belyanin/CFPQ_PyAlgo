@@ -106,6 +106,17 @@ class Intersection:
                 diag_matrices[symbol] = diag_matrix
 
         return diag_matrices
+    def create_inverse_matrices(self) -> Dict[str, Matrix]:
+        """
+        Create inverse matrices from graph and regex matrices for each symbol
+        """
+        num_vert_regex = self.regular_automaton.num_states
+
+        diag_matrices = dict()
+        for symbol in self.regular_automaton.matrices:
+            diag_matrices[symbol] = self.regular_automaton.matrices[symbol].dup().T
+
+        return diag_matrices
 
     def create_masks_matrix(self) -> Matrix:
         num_vert_graph = self.graph.get_number_of_vertices()
@@ -134,11 +145,11 @@ class Intersection:
         regex_start_states = self.regular_automaton.start_states
 
         diag_matrices = self.create_diag_matrices()
+        inverse_matrices = self.create_inverse_matrices()
 
-        result = Matrix.sparse(BOOL, num_vert_graph, num_vert_graph)
+        result = Matrix.sparse(BOOL, 1, num_vert_graph)
 
-        # create a mask of source vertices vector
-        m_src_v = Vector.from_lists(src_verts, [True for _ in range(len(src_verts))], size=num_vert_graph)
+        src_verts_matrix = Matrix.from_lists(src_verts, [0] * len(src_verts), [True] * len(src_verts), num_vert_graph, 1)
 
         # initialize matrices for multiple source bfs
         ident = self.create_masks_matrix()
@@ -173,26 +184,17 @@ class Intersection:
                     with BOOL.ANY_PAIR:
                         found = vect.mxm(diag_matrices[symbol])
 
+                    with BOOL.ANY_PAIR:
+                        found_on_iter += inverse_matrices[symbol].dup().mxm(found)
                     with Accum(binaryop.MAX_BOOL):
-                        # extract left (grammar) part of the masks matrix and rearrange rows
-                        i_x, i_y, _ = found.extract_matrix(col_index=slice(0, num_vert_regex - 1)).to_lists()
-                        for i in range(len(i_y)):
-                            found_on_iter.assign_row(i_y[i], found.extract_row(i_x[i]))
-
-                    # check if new nodes were found. if positive, switch the flag
+                        identity = Matrix.identity(BOOL, num_vert_regex)
+                        identity.resize(num_vert_regex, num_vert_regex + num_vert_graph)
+                        found_on_iter += identity
                     if not found_on_iter.iseq(vect):
                         not_empty_for_at_least_one_symbol = True
 
-            # extract right (graph) part of the masks matrix and get a row of reachable nodes in a graph
-            reachable = found_on_iter.extract_matrix(
-                col_index=slice(num_vert_regex, num_verts_diag - 1)
-            ).T.reduce_vector(BOOL.ANY_MONOID) # reduce by columns
-
-            # update graph boolean matrix for every source vertex
-            # result matrix contains reachability for every symbol combined
             with Accum(binaryop.MAX_BOOL):
-                for st_v in src_verts:
-                    result.assign_row(st_v, reachable, mask=m_src_v, desc=descriptor.C)
+                Matrix.dense(BOOL, 1, num_vert_regex, fill=1).mxm(found_on_iter.extract_matrix(col_index=slice(num_vert_regex, num_verts_diag - 1)), out=result, mask=src_verts_matrix.T, desc=descriptor.C) 
 
             not_empty = not_empty_for_at_least_one_symbol
             level += 1
