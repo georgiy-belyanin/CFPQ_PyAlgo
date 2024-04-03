@@ -22,7 +22,6 @@ class Intersection:
 
     def __init__(self, graph: Graph, regular_automaton: RegAutomaton):
         self.graph = graph
-        self.graph.load_bool_graph()
         self.regular_automaton = regular_automaton
         self.intersection_matrices = dict()
         self.__create_intersection_matrices__()
@@ -80,32 +79,6 @@ class Intersection:
         """
         return reg_vert * self.graph.get_number_of_vertices() + graph_vert
 
-    def create_diag_matrices(self) -> Dict[str, Matrix]:
-        """
-        Create a block diagonal matrices from graph and regex matrices for each symbol
-        """
-        num_vert_graph = self.graph.get_number_of_vertices()
-        num_vert_regex = self.regular_automaton.num_states
-        diag_num_verts = num_vert_graph + num_vert_regex
-
-        diag_matrices = dict()
-        for symbol in self.regular_automaton.matrices:
-            if symbol in self.graph:
-                diag_matrix = Matrix.sparse(BOOL, diag_num_verts, diag_num_verts)
-                diag_matrix.assign_matrix(
-                    self.regular_automaton.matrices[symbol],
-                    slice(0, num_vert_regex - 1),
-                    slice(0, num_vert_regex - 1),
-                )
-                diag_matrix.assign_matrix(
-                    self.graph[symbol],
-                    slice(num_vert_regex, diag_num_verts - 1),
-                    slice(num_vert_regex, diag_num_verts - 1),
-                )
-
-                diag_matrices[symbol] = diag_matrix
-
-        return diag_matrices
     def create_inverse_matrices(self) -> Dict[str, Matrix]:
         """
         Create inverse matrices from graph and regex matrices for each symbol
@@ -123,11 +96,14 @@ class Intersection:
         num_vert_regex = self.regular_automaton.num_states
         num_verts_diag = num_vert_graph + num_vert_regex
 
-        mask_matrix = Matrix.identity(BOOL, num_vert_regex, value=True)
-        mask_matrix.resize(num_vert_regex, num_verts_diag)
+        mask_matrix = Matrix.sparse(BOOL, num_vert_regex, num_verts_diag)
+        mask_matrix.assign_matrix(
+            Matrix.identity(BOOL, num_vert_regex, value=True),
+            slice(0, num_vert_regex - 1),
+            slice(num_vert_graph, num_verts_diag - 1),
+        )
 
         return mask_matrix
-
     def intersect_bfs(self, src_verts) -> EpsilonNFA:
         """
         Intersection implementation with synchronous breadth first traversal
@@ -141,25 +117,23 @@ class Intersection:
 
         graph = self.graph
         regex = self.regular_automaton.matrices
+        mask_test =  Matrix.from_lists(self.regular_automaton.final_states, [0] * len(self.regular_automaton.final_states), [True] * len(self.regular_automaton.final_states), num_vert_regex, 1).T
 
         regex_start_states = self.regular_automaton.start_states
 
-        diag_matrices = self.create_diag_matrices()
         inverse_matrices = self.create_inverse_matrices()
 
         result = Matrix.sparse(BOOL, 1, num_vert_graph)
 
-        src_verts_matrix = Matrix.from_lists(src_verts, [0] * len(src_verts), [True] * len(src_verts), num_vert_graph, 1)
-
         # initialize matrices for multiple source bfs
-        ident = self.create_masks_matrix()
+        ident = Matrix.sparse(BOOL, num_vert_regex, num_vert_graph)
         vect = ident.dup()
         found = ident.dup()
 
         # fill start states
         for reg_start_state in regex_start_states:
             for gr_start_state in src_verts:
-                found[reg_start_state, num_vert_regex + gr_start_state] = True
+                found[reg_start_state, gr_start_state] = True
 
         # matrix which contains newly found nodes on each iteration
         found_on_iter = found.dup()
@@ -168,35 +142,25 @@ class Intersection:
         not_empty = True
         level = 0
         while not_empty and level < num_verts_inter:
-            # for each symbol we are going to store if any new nodes were found during traversal.
-            # if none are found, then 'not_empty' flag turns False, which means that no matrices change anymore
-            # and we can stop the traversal
             not_empty_for_at_least_one_symbol = False
 
-            vect.assign_matrix(found_on_iter, mask=vect, desc=descriptor.RC)
-            vect.assign_scalar(True, mask=ident)
+            vect.assign_matrix(found_on_iter)
 
             # stores found nodes for each symbol
-            found_on_iter.assign_matrix(ident)
 
             for symbol in regex:
-                if symbol in graph:
-                    with BOOL.ANY_PAIR:
-                        found = vect.mxm(diag_matrices[symbol])
-
-                    with BOOL.ANY_PAIR:
-                        found_on_iter += inverse_matrices[symbol].dup().mxm(found)
+                with BOOL.ANY_PAIR:
+                    vect.mxm(self.graph[symbol], out=found)
                     with Accum(binaryop.MAX_BOOL):
-                        identity = Matrix.identity(BOOL, num_vert_regex)
-                        identity.resize(num_vert_regex, num_vert_regex + num_vert_graph)
-                        found_on_iter += identity
-                    if not found_on_iter.iseq(vect):
-                        not_empty_for_at_least_one_symbol = True
+                        inverse_matrices[symbol].mxm(found, out=found_on_iter)
+            if not found_on_iter.iseq(vect):
+                not_empty_for_at_least_one_symbol = True
 
             with Accum(binaryop.MAX_BOOL):
-                Matrix.dense(BOOL, 1, num_vert_regex, fill=1).mxm(found_on_iter.extract_matrix(col_index=slice(num_vert_regex, num_verts_diag - 1)), out=result, mask=src_verts_matrix.T, desc=descriptor.C) 
+                mask_test.mxm(found_on_iter, out=result)
 
             not_empty = not_empty_for_at_least_one_symbol
             level += 1
 
         return result
+

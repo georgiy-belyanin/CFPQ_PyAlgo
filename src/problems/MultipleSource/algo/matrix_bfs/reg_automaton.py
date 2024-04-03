@@ -30,7 +30,8 @@ class RegAutomaton:
 
     def from_regex_txt(path) -> RegAutomaton:
         with open(path, "r") as file:
-            regex = Regex(file.readline())
+            s = file.readline().strip()
+            regex = Regex(s)
 
             return RegAutomaton(regex)
 

@@ -43,7 +43,7 @@ class Graph:
         self.matrices_size = get_graph_size(self.path)
 
         with open(self.path, "r") as f:
-            for line in tqdm(f.readlines()) if verbose else f.readlines():
+            for line in f:
                 v, label, to = line.split()
                 v, to = int(v), int(to)
 
